@@ -12,7 +12,7 @@ import (
 // Maximum amounts of messages to buffer to broadcasting
 const broadcastBuffedMsgCount = 10
 
-type ClientHandler func(ctx context.Context, kill func(), send chan<- []byte, recv <-chan []byte)
+type ClientHandler func(ctx context.Context, addr string, header http.Header, kill func(), send chan<- []byte, recv <-chan []byte)
 
 // Hub maintains the set of active clients and broadcasts messages to the
 // clients.
@@ -83,7 +83,7 @@ func (h *Hub) ServeWs(w http.ResponseWriter, r *http.Request) {
 	h.register <- c
 
 	if h.onNewClient != nil {
-		go h.onNewClient(c.Ctx(), c.Close, c.Send(), c.Recv())
+		go h.onNewClient(c.Ctx(), r.RemoteAddr, r.Header, c.Close, c.Send(), c.Recv())
 	}
 
 	// start processing routines for the client

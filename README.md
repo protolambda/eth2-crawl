@@ -1,6 +1,6 @@
-# Rumorhub
+# Eth2-crawl
 
-A server to orchestrate rumor instances with, collect data, and serve it for other applications to use.
+A server to collect Rumor data, and serve it for other applications to use.
 
 
 ## License

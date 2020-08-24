@@ -1,4 +1,4 @@
-module github.com/protolambda/rumorhub
+module github.com/protolambda/eth2-crawl
 
 go 1.14
 

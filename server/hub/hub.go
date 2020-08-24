@@ -3,7 +3,7 @@ package hub
 import (
 	"context"
 	"github.com/gorilla/websocket"
-	"github.com/protolambda/rumorhub/server/client"
+	"github.com/protolambda/eth2-crawl/server/client"
 	"log"
 	"net/http"
 	"sync"

@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/libp2p/go-libp2p-core/peer"
+	"github.com/protolambda/eth2-crawl/server/hub"
 	"github.com/protolambda/rumor/p2p/track/dstee"
 	"github.com/protolambda/rumor/p2p/track/dstee/translate"
-	"github.com/protolambda/rumorhub/server/hub"
 	"log"
 	"net/http"
 	"strconv"
@@ -17,17 +17,22 @@ import (
 type Server struct {
 	addr string
 
-	userHub *hub.Hub
+	userHub      *hub.Hub
 	peerstoreHub *hub.Hub
 
-	peerstoreLock sync.RWMutex
-	latestPeerstore map[peer.ID]*translate.PartialPeerstoreEntry
+	producerKey string
+	consumerKey string
+
+	peerstoreLock    sync.RWMutex
+	latestPeerstore  map[peer.ID]*translate.PartialPeerstoreEntry
 	peerstoreHistory [][]string
 }
 
-func NewServer(addr string) *Server {
+func NewServer(addr string, producerKey string, consumerKey string) *Server {
 	server := &Server{
-		addr: addr,
+		addr:            addr,
+		producerKey:     producerKey,
+		consumerKey:     consumerKey,
 		latestPeerstore: make(map[peer.ID]*translate.PartialPeerstoreEntry),
 	}
 	return server
@@ -44,13 +49,22 @@ func (serv *Server) Start(ctx context.Context) {
 
 	// open a little server to provide the websocket endpoint in a browser-friendly way.
 	go func() {
-		httpServer := http.NewServeMux()
-		httpServer.HandleFunc("/user/ws", serv.userHub.ServeWs)
-		httpServer.HandleFunc("/peerstore/input/ws", serv.peerstoreHub.ServeWs)
-		httpServer.HandleFunc("/peerstore/latest", serv.serveLatestPeerstore)
-		httpServer.HandleFunc("/peerstore/history", serv.servePeerstoreHistory)
+		consumerAuth := APIKeyCheck(func(key string) bool {
+			return serv.consumerKey == "" || key == serv.consumerKey
+		}).authMiddleware
+		producerAuth := APIKeyCheck(func(key string) bool {
+			return serv.producerKey == "" || key == serv.producerKey
+		}).authMiddleware
 
-		// TODO: api endpoint for rumor instances to register themselves
+		httpServer := http.NewServeMux()
+		httpServer.Handle("/user/ws",
+			Middleware(http.HandlerFunc(serv.userHub.ServeWs), consumerAuth))
+		httpServer.Handle("/peerstore/input/ws",
+			Middleware(http.HandlerFunc(serv.peerstoreHub.ServeWs), producerAuth))
+		httpServer.Handle("/peerstore/latest",
+			Middleware(http.HandlerFunc(serv.serveLatestPeerstore), consumerAuth))
+		httpServer.Handle("/peerstore/history",
+			Middleware(http.HandlerFunc(serv.servePeerstoreHistory), consumerAuth))
 
 		// accept connections
 		if err := http.ListenAndServe(serv.addr, httpServer); err != nil {
@@ -110,7 +124,6 @@ func (serv *Server) handleUserClient(ctx context.Context, addr string, h http.He
 }
 
 func (serv *Server) handlePeerstoreInputClient(ctx context.Context, addr string, h http.Header, kill func(), send chan<- []byte, recv <-chan []byte) {
-	peerstoreId := h.Get("PEERSTORE")
 
 	for {
 		select {
@@ -132,9 +145,9 @@ func (serv *Server) handlePeerstoreInputClient(ctx context.Context, addr string,
 
 			var entries [][]string
 			if ev.Op == dstee.Delete {
-				entries = [][]string{{peerstoreId, "del", strconv.FormatUint(ev.TimeMs, 10), ev.PeerID.String(), ev.DelPath, ""}}
+				entries = [][]string{{addr, "del", strconv.FormatUint(ev.TimeMs, 10), ev.PeerID.String(), ev.DelPath, ""}}
 			} else {
-				entries = ev.Entry.ToCSV(peerstoreId, string(ev.Op), strconv.FormatUint(ev.TimeMs, 10), ev.PeerID.String())
+				entries = ev.Entry.ToCSV(addr, string(ev.Op), strconv.FormatUint(ev.TimeMs, 10), ev.PeerID.String())
 			}
 
 			serv.peerstoreLock.Lock()
@@ -153,4 +166,24 @@ func (serv *Server) handlePeerstoreInputClient(ctx context.Context, addr string,
 			return
 		}
 	}
+}
+
+func Middleware(h http.Handler, middleware ...func(http.Handler) http.Handler) http.Handler {
+	for _, mw := range middleware {
+		h = mw(h)
+	}
+	return h
+}
+
+type APIKeyCheck func(key string) bool
+
+func (kc APIKeyCheck) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		apiKey := req.Header.Get("X-Api-Key")
+		if !kc(apiKey) {
+			rw.WriteHeader(http.StatusForbidden)
+		} else {
+			next.ServeHTTP(rw, req)
+		}
+	})
 }

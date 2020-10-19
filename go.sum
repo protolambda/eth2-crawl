@@ -550,6 +550,8 @@ github.com/protolambda/rumor v0.3.3 h1:6c7ZiVOSMYA4UuBaxbLOUEBdFYbI0DCh5FppV5iBa
 github.com/protolambda/rumor v0.3.3/go.mod h1:LTzs7zfNuZ/qj8HWz8B9wT58iWnUrCw3l9ErKpXPAYs=
 github.com/protolambda/rumor v0.3.4 h1:xqTlnlQ5wCkr+OEBWC21hekGNpXPka1ABljU5BIfq2o=
 github.com/protolambda/rumor v0.3.4/go.mod h1:LTzs7zfNuZ/qj8HWz8B9wT58iWnUrCw3l9ErKpXPAYs=
+github.com/protolambda/rumor v0.3.5 h1:YRN+hm7c/5c4OmnvT1VvI5JbDajNK17FSQPZe+Q107c=
+github.com/protolambda/rumor v0.3.5/go.mod h1:LTzs7zfNuZ/qj8HWz8B9wT58iWnUrCw3l9ErKpXPAYs=
 github.com/protolambda/zrnt v0.12.2-alpha.1 h1:aJSyFCxX88LVUzMSgEqNsnSAmvH3atJB5+OQ0XSpDgI=
 github.com/protolambda/zrnt v0.12.2-alpha.1/go.mod h1:a/raDEpbODpGQXj9rsnmkAbPF/Dkhecb7v4cz+FTeuo=
 github.com/protolambda/zrnt v0.12.4 h1:BJE8HSYx9wJnOOBr/QdYCE0fxUOfJpSKbSCcXGprm28=

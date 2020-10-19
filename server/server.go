@@ -1,13 +1,17 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/protolambda/eth2-crawl/server/hub"
 	"github.com/protolambda/rumor/p2p/track/dstee"
 	"github.com/protolambda/rumor/p2p/track/dstee/translate"
+	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -15,8 +19,15 @@ import (
 
 const maxPeerstoreHistory int = 100000
 
+type EventFrom struct {
+	Event    *dstee.Event `json:"ev"`
+	FromAddr string       `json:"from"`
+}
+
 type Server struct {
 	addr string
+
+	storagePath string
 
 	userHub      *hub.Hub
 	peerstoreHub *hub.Hub
@@ -24,21 +35,32 @@ type Server struct {
 	producerKey string
 	consumerKey string
 
-	peerstoreLock    sync.RWMutex
+	peerstoreLock sync.RWMutex
+
+	inputEvents chan *EventFrom
+
+	historyPipeline chan []string
+
 	// keyed by string representation of peer.ID,
 	// since json encoder does not like string-type variants with custom marshal function.
 	latestPeerstore  map[string]*translate.PartialPeerstoreEntry
 	peerstoreHistory [][]string
 }
 
-func NewServer(addr string, producerKey string, consumerKey string) *Server {
+func NewServer(addr string, storagePath string, producerKey string, consumerKey string) (*Server, error) {
 	server := &Server{
 		addr:            addr,
+		storagePath:     storagePath,
 		producerKey:     producerKey,
 		consumerKey:     consumerKey,
+		inputEvents:     make(chan *EventFrom, 1000),
+		historyPipeline: make(chan []string, 1000),
 		latestPeerstore: make(map[string]*translate.PartialPeerstoreEntry),
 	}
-	return server
+	if err := server.loadFromStorage(); err != nil {
+		return nil, err
+	}
+	return server, nil
 }
 
 func (serv *Server) Start(ctx context.Context) {
@@ -89,15 +111,142 @@ func (serv *Server) Start(ctx context.Context) {
 	go serv.peerstoreHub.Run()
 	defer closeHubs()
 
-	browserTicker := time.NewTicker(time.Second * 20)
-	defer browserTicker.Stop()
+	if err := serv.processLoop(ctx); err != nil {
+		log.Println("processLoop failed: ", err)
+	}
+	close(serv.inputEvents)
+	close(serv.historyPipeline)
+}
+
+func (serv *Server) loadFromStorage() error {
+	f, err := os.OpenFile(serv.storagePath, os.O_CREATE|os.O_RDONLY, os.ModePerm)
+	if err != nil {
+		return fmt.Errorf("failed to open storage file: %v", err)
+	}
+	defer f.Close()
+
+	r := json.NewDecoder(f)
 
 	for {
+		var evFrom EventFrom
+		err := r.Decode(&evFrom)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("failed to parse JSON data line: %v", err)
+		}
+		ev := evFrom.Event
+		if ev.Op == dstee.Put {
+			k := ev.PeerID.String()
+			if entry, ok := serv.latestPeerstore[k]; !ok {
+				serv.latestPeerstore[k] = ev.Entry
+			} else {
+				entry.Merge(ev.Entry)
+			}
+		}
+
+		var entries [][]string
+		if ev.Op == dstee.Delete {
+			entries = [][]string{{evFrom.FromAddr, string(ev.Op), strconv.FormatUint(ev.TimeMs, 10), ev.PeerID.String(), ev.DelPath, ""}}
+		} else {
+			// ToCSV appends 2 entries to the prefix, repeats it for each piece of put data.
+			// from, op, time_ms, peer_id, key, value
+			entries = ev.Entry.ToCSV(evFrom.FromAddr, string(ev.Op), strconv.FormatUint(ev.TimeMs, 10), ev.PeerID.String())
+		}
+		serv.peerstoreHistory = append(serv.peerstoreHistory, entries...)
+		serv.pruneHistoryMaybe()
+	}
+
+	return nil
+}
+
+func (serv *Server) handleEvent(evInput *EventFrom) {
+	ev := evInput.Event
+	if ev.Op == dstee.Put {
+		k := ev.PeerID.String()
+		if entry, ok := serv.latestPeerstore[k]; !ok {
+			serv.latestPeerstore[k] = ev.Entry
+		} else {
+			entry.Merge(ev.Entry)
+		}
+	}
+
+	var entries [][]string
+	if ev.Op == dstee.Delete {
+		entries = [][]string{{evInput.FromAddr, string(ev.Op), strconv.FormatUint(ev.TimeMs, 10), ev.PeerID.String(), ev.DelPath, ""}}
+	} else {
+		// ToCSV appends 2 entries to the prefix, repeats it for each piece of put data.
+		// from, op, time_ms, peer_id, key, value
+		entries = ev.Entry.ToCSV(evInput.FromAddr, string(ev.Op), strconv.FormatUint(ev.TimeMs, 10), ev.PeerID.String())
+	}
+
+	for _, e := range entries {
+		serv.historyPipeline <- e
+	}
+}
+
+func (serv *Server) pruneHistoryMaybe() {
+	// when it goes too far beyond the maximum, prune it down again
+	if top := int(float64(maxPeerstoreHistory) * 1.2); len(serv.peerstoreHistory) > top {
+		// move latest history back to start of array
+		copy(serv.peerstoreHistory, serv.peerstoreHistory[len(serv.peerstoreHistory)-top:])
+		// prune end of history
+		serv.peerstoreHistory = serv.peerstoreHistory[:top]
+	}
+}
+
+func (serv *Server) handleHistory(entry []string) {
+	serv.peerstoreLock.Lock()
+	serv.peerstoreHistory = append(serv.peerstoreHistory, entry)
+	serv.pruneHistoryMaybe()
+	serv.peerstoreLock.Unlock()
+
+	dat, err := json.Marshal(entry)
+	if err != nil {
+		log.Printf("warning: could not encode entry: %v", err)
+		return
+	}
+	serv.userHub.Broadcast(dat)
+}
+
+func (serv *Server) processLoop(ctx context.Context) error {
+	f, err := os.OpenFile(serv.storagePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, os.ModeAppend|os.ModePerm)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	buf := bufio.NewWriter(f)
+	defer buf.Flush()
+	w := json.NewEncoder(buf)
+	flushTicker := time.NewTicker(time.Second * 12)
+
+	events := serv.inputEvents
+	history := serv.historyPipeline
+	for {
 		select {
-		case <-browserTicker.C:
-			serv.userHub.Broadcast([]byte("hello"))
+		case <-flushTicker.C:
+			if err := buf.Flush(); err != nil {
+				log.Printf("warning: could not flush history buffer: %v", err)
+			}
+		case ev, ok := <-events:
+			if !ok {
+				events = nil
+				continue
+			}
+			if err := w.Encode(ev); err != nil {
+				log.Printf("warning: could not persist event: %v", err)
+			}
+			serv.handleEvent(ev)
+		case entry, ok := <-history:
+			if !ok {
+				history = nil
+				continue
+			}
+			serv.handleHistory(entry)
 		case <-ctx.Done():
-			return
+			return nil
 		}
 	}
 }
@@ -149,40 +298,9 @@ func (serv *Server) handlePeerstoreInputClient(ctx context.Context, addr string,
 				log.Printf("invalid peerstore event content: '%s': %v", msg, err)
 				break
 			}
-			if ev.Op == dstee.Put {
-				k := ev.PeerID.String()
-				if entry, ok := serv.latestPeerstore[k]; !ok {
-					serv.latestPeerstore[k] = ev.Entry
-				} else {
-					entry.Merge(ev.Entry)
-				}
-			}
-
-			var entries [][]string
-			if ev.Op == dstee.Delete {
-				entries = [][]string{{addr, "del", strconv.FormatUint(ev.TimeMs, 10), ev.PeerID.String(), ev.DelPath, ""}}
-			} else {
-				entries = ev.Entry.ToCSV(addr, string(ev.Op), strconv.FormatUint(ev.TimeMs, 10), ev.PeerID.String())
-			}
-
-			serv.peerstoreLock.Lock()
-			serv.peerstoreHistory = append(serv.peerstoreHistory, entries...)
-			// when it goes too far beyond the maximum, prune it down again
-			if top := int(float64(maxPeerstoreHistory) * 1.2); len(serv.peerstoreHistory) > top {
-				// move latest history back to start of array
-				copy(serv.peerstoreHistory, serv.peerstoreHistory[len(serv.peerstoreHistory)-top:])
-				// prune end of history
-				serv.peerstoreHistory = serv.peerstoreHistory[:top]
-			}
-			serv.peerstoreLock.Unlock()
-
-			for _, e := range entries {
-				dat, err := json.Marshal(e)
-				if err != nil {
-					log.Printf("warning: could not encode entry: %v", e)
-					continue
-				}
-				serv.userHub.Broadcast(dat)
+			serv.inputEvents <- &EventFrom{
+				Event:    &ev,
+				FromAddr: addr,
 			}
 		case <-ctx.Done():
 			return

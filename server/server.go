@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/protolambda/eth2-crawl/server/hub"
 	"github.com/protolambda/rumor/p2p/track/dstee"
 	"github.com/protolambda/rumor/p2p/track/dstee/translate"
@@ -26,7 +25,9 @@ type Server struct {
 	consumerKey string
 
 	peerstoreLock    sync.RWMutex
-	latestPeerstore  map[peer.ID]*translate.PartialPeerstoreEntry
+	// keyed by string representation of peer.ID,
+	// since json encoder does not like string-type variants with custom marshal function.
+	latestPeerstore  map[string]*translate.PartialPeerstoreEntry
 	peerstoreHistory [][]string
 }
 
@@ -35,7 +36,7 @@ func NewServer(addr string, producerKey string, consumerKey string) *Server {
 		addr:            addr,
 		producerKey:     producerKey,
 		consumerKey:     consumerKey,
-		latestPeerstore: make(map[peer.ID]*translate.PartialPeerstoreEntry),
+		latestPeerstore: make(map[string]*translate.PartialPeerstoreEntry),
 	}
 	return server
 }
@@ -136,20 +137,22 @@ func (serv *Server) handleUserClient(ctx context.Context, addr string, h http.He
 }
 
 func (serv *Server) handlePeerstoreInputClient(ctx context.Context, addr string, h http.Header, kill func(), send chan<- []byte, recv <-chan []byte) {
-
 	for {
 		select {
 		case msg, ok := <-recv:
 			if !ok {
 				return
 			}
+			log.Println("got event: ", string(msg))
 			var ev dstee.Event
 			if err := json.Unmarshal(msg, &ev); err != nil {
-				log.Printf("invalid peerstore event content: '%s'", msg)
+				log.Printf("invalid peerstore event content: '%s': %v", msg, err)
+				break
 			}
 			if ev.Op == dstee.Put {
-				if entry, ok := serv.latestPeerstore[ev.PeerID]; !ok {
-					serv.latestPeerstore[ev.PeerID] = ev.Entry
+				k := ev.PeerID.String()
+				if entry, ok := serv.latestPeerstore[k]; !ok {
+					serv.latestPeerstore[k] = ev.Entry
 				} else {
 					entry.Merge(ev.Entry)
 				}

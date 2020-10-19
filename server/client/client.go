@@ -19,7 +19,7 @@ const (
 	pingPeriod = (pongWait * 9) / 10
 
 	// Maximum message size allowed from peer.
-	maxMessageSize = 512
+	maxMessageSize = 20000
 
 	// Maximum amounts of messages to buffer to a client before disconnecting them
 	buffedMsgCount = 200
@@ -95,7 +95,12 @@ func (c *Client) ReadPump() {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("error: %v", err)
 			}
-			break
+			if _, ok := err.(*websocket.CloseError); ok {
+				break
+			}
+			// ignore message otherwise
+			log.Printf("warning, unexpected read error, will close connection: %v", err)
+			return
 		}
 		c.recv <- message
 	}

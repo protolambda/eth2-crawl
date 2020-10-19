@@ -38,11 +38,11 @@ type Hub struct {
 
 func NewHub(ctx context.Context, onNewClient ClientHandler) *Hub {
 	return &Hub{
-		register:   make(chan *client.Client),
-		unregister: make(chan *client.Client),
-		clients:    make(map[*client.Client]bool),
-		broadcast:  make(chan []byte, broadcastBuffedMsgCount),
-		ctx: ctx,
+		register:    make(chan *client.Client),
+		unregister:  make(chan *client.Client),
+		clients:     make(map[*client.Client]bool),
+		broadcast:   make(chan []byte, broadcastBuffedMsgCount),
+		ctx:         ctx,
 		onNewClient: onNewClient,
 	}
 }
@@ -73,7 +73,6 @@ func (h *Hub) ServeWs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-
 	var c *client.Client
 	c = client.NewClient(conn, func() {
 		h.unregister <- c
@@ -100,9 +99,10 @@ func (h *Hub) Run() {
 				wg.Add(1)
 				go func(c *client.Client) {
 					c.Close()
+					wg.Done()
 				}(cl)
 			}
-			wg.Done()
+			wg.Wait()
 			return
 		case c := <-h.register:
 			h.clients[c] = true
@@ -111,7 +111,7 @@ func (h *Hub) Run() {
 				delete(h.clients, c)
 				c.Close()
 			}
-		case msg := <- h.broadcast:
+		case msg := <-h.broadcast:
 			log.Printf("broadcating msg to %d clients", len(h.clients))
 			for cl, _ := range h.clients {
 				// TODO: select to avoid blocking send channel?

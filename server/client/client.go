@@ -39,7 +39,7 @@ type Client struct {
 	// Buffered channel of outbound messages.
 	send chan []byte
 
-	ctx context.Context
+	ctx    context.Context
 	cancel context.CancelFunc
 
 	// Buffered channel of inbound messages.
@@ -65,10 +65,10 @@ func NewClient(conn *websocket.Conn, unregister func()) *Client {
 			close(recvCh)
 			unregister()
 		},
-		conn:       conn,
-		send:       sendCh,
-		recv:       recvCh,
-		ctx: ctx,
+		conn:   conn,
+		send:   sendCh,
+		recv:   recvCh,
+		ctx:    ctx,
 		cancel: cancel,
 	}
 }

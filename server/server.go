@@ -50,27 +50,37 @@ func (serv *Server) Start(ctx context.Context) {
 	serv.peerstoreHub = hub.NewHub(hubsCtx, serv.handlePeerstoreInputClient)
 
 	// open a little server to provide the websocket endpoint in a browser-friendly way.
+	consumerAuth := APIKeyCheck(func(key string) bool {
+		return serv.consumerKey == "" || key == serv.consumerKey
+	}).authMiddleware
+	producerAuth := APIKeyCheck(func(key string) bool {
+		return serv.producerKey == "" || key == serv.producerKey
+	}).authMiddleware
+
+	router := http.NewServeMux()
+	srv := &http.Server{
+		Addr:    serv.addr,
+		Handler: router,
+	}
+	router.Handle("/user/ws",
+		Middleware(http.HandlerFunc(serv.userHub.ServeWs), consumerAuth))
+	router.Handle("/peerstore/input/ws",
+		Middleware(http.HandlerFunc(serv.peerstoreHub.ServeWs), producerAuth))
+	router.Handle("/peerstore/latest",
+		Middleware(http.HandlerFunc(serv.serveLatestPeerstore), consumerAuth))
+	router.Handle("/peerstore/history",
+		Middleware(http.HandlerFunc(serv.servePeerstoreHistory), consumerAuth))
+
 	go func() {
-		consumerAuth := APIKeyCheck(func(key string) bool {
-			return serv.consumerKey == "" || key == serv.consumerKey
-		}).authMiddleware
-		producerAuth := APIKeyCheck(func(key string) bool {
-			return serv.producerKey == "" || key == serv.producerKey
-		}).authMiddleware
-
-		httpServer := http.NewServeMux()
-		httpServer.Handle("/user/ws",
-			Middleware(http.HandlerFunc(serv.userHub.ServeWs), consumerAuth))
-		httpServer.Handle("/peerstore/input/ws",
-			Middleware(http.HandlerFunc(serv.peerstoreHub.ServeWs), producerAuth))
-		httpServer.Handle("/peerstore/latest",
-			Middleware(http.HandlerFunc(serv.serveLatestPeerstore), consumerAuth))
-		httpServer.Handle("/peerstore/history",
-			Middleware(http.HandlerFunc(serv.servePeerstoreHistory), consumerAuth))
-
 		// accept connections
-		if err := http.ListenAndServe(serv.addr, httpServer); err != nil {
+		if err := srv.ListenAndServe(); err != nil {
 			log.Fatal("client hub server err: ", err)
+		}
+	}()
+	defer func() {
+		ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
+		if err := srv.Shutdown(ctx); err != nil {
+			log.Print("Server shutdown failed: ", err)
 		}
 	}()
 
@@ -78,7 +88,7 @@ func (serv *Server) Start(ctx context.Context) {
 	go serv.peerstoreHub.Run()
 	defer closeHubs()
 
-	browserTicker := time.NewTicker(time.Second * 2)
+	browserTicker := time.NewTicker(time.Second * 20)
 	defer browserTicker.Stop()
 
 	for {

@@ -23,7 +23,7 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	serv := server.NewServer(*serverAddr, *producerKey, *consumerKey)
-	serv.Start(ctx)
+	go serv.Start(ctx)
 
 	select {
 	case <-interrupt:

@@ -14,6 +14,8 @@ import (
 	"time"
 )
 
+const maxPeerstoreHistory int = 100000
+
 type Server struct {
 	addr string
 
@@ -152,6 +154,13 @@ func (serv *Server) handlePeerstoreInputClient(ctx context.Context, addr string,
 
 			serv.peerstoreLock.Lock()
 			serv.peerstoreHistory = append(serv.peerstoreHistory, entries...)
+			// when it goes too far beyond the maximum, prune it down again
+			if top := int(float64(maxPeerstoreHistory) * 1.2); len(serv.peerstoreHistory) > top {
+				// move latest history back to start of array
+				copy(serv.peerstoreHistory, serv.peerstoreHistory[len(serv.peerstoreHistory)-top:])
+				// prune end of history
+				serv.peerstoreHistory = serv.peerstoreHistory[:top]
+			}
 			serv.peerstoreLock.Unlock()
 
 			for _, e := range entries {

@@ -112,7 +112,6 @@ func (h *Hub) Run() {
 				c.Close()
 			}
 		case msg := <-h.broadcast:
-			log.Printf("broadcating msg to %d clients", len(h.clients))
 			for cl, _ := range h.clients {
 				// TODO: select to avoid blocking send channel?
 				cl.Send() <- msg
